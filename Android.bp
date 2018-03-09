@@ -72,7 +72,6 @@ cc_defaults {
 
         "-DMYTHREAD_POSIX=1",
         "-DTUKLIB_FAST_UNALIGNED_ACCESS=1",
-        "-DTUKLIB_PHYSMEM_SYSCONF=1",
         "-DTUKLIB_CPUCORES_SYSCONF=1",
     ],
 
@@ -89,12 +88,16 @@ cc_defaults {
                 "-DHAVE_PTHREAD_CONDATTR_SETCLOCK=1",
                 "-DHAVE_FUTIMENS=1",
                 "-DHAVE_POSIX_FADVISE=1",
+
+                "-DTUKLIB_PHYSMEM_SYSCONF=1",
             ],
         },
         darwin: {
             cflags: [
                 "-DHAVE_OPTRESET=1",
                 "-DHAVE_FUTIMES=1",
+
+                "-DTUKLIB_PHYSMEM_SYSCTL=1",
             ],
         },
     },
