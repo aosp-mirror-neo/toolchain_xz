@@ -140,7 +140,7 @@ io_write_to_user_abort_pipe(void)
 	// handler. So ignore the errors and try to avoid warnings with
 	// GCC and glibc when _FORTIFY_SOURCE=2 is used.
 	uint8_t b = '\0';
-	const int ret = write(user_abort_pipe[1], &b, 1);
+	const ssize_t ret = write(user_abort_pipe[1], &b, 1);
 	(void)ret;
 	return;
 }
@@ -330,14 +330,14 @@ io_unlink(const char *name, const struct stat *known_st)
 		// it is possible that the user has put a new file in place
 		// of the original file, and in that case it obviously
 		// shouldn't be removed.
-		message_error(_("%s: File seems to have been moved, "
+		message_warning(_("%s: File seems to have been moved, "
 				"not removing"), name);
 	else
 #endif
 		// There's a race condition between lstat() and unlink()
 		// but at least we have tried to avoid removing wrong file.
 		if (unlink(name))
-			message_error(_("%s: Cannot remove: %s"),
+			message_warning(_("%s: Cannot remove: %s"),
 					name, strerror(errno));
 
 	return;
@@ -368,7 +368,14 @@ io_copy_attrs(const file_pair *pair)
 
 	mode_t mode;
 
-	if (fchown(pair->dest_fd, (uid_t)(-1), pair->src_st.st_gid)) {
+	// With BSD semantics the new dest file may have a group that
+	// does not belong to the user. If the src file has the same gid
+	// nothing has to be done. Nevertheless OpenBSD fchown(2) fails
+	// in this case which seems to be POSIX compliant. As there is
+	// nothing to do, skip the system call.
+	if (pair->dest_st.st_gid != pair->src_st.st_gid
+			&& fchown(pair->dest_fd, (uid_t)(-1),
+				pair->src_st.st_gid)) {
 		message_warning(_("%s: Cannot set the file group: %s"),
 				pair->dest_name, strerror(errno));
 		// We can still safely copy some additional permissions:
@@ -536,8 +543,9 @@ io_open_src_real(file_pair *pair)
 	}
 
 	// Symlinks are not followed unless writing to stdout or --force
-	// was used.
-	const bool follow_symlinks = opt_stdout || opt_force;
+	// or --keep was used.
+	const bool follow_symlinks
+			= opt_stdout || opt_force || opt_keep_original;
 
 	// We accept only regular files if we are writing the output
 	// to disk too. bzip2 allows overriding this with --force but
@@ -674,7 +682,7 @@ io_open_src_real(file_pair *pair)
 	}
 
 #ifndef TUKLIB_DOSLIKE
-	if (reg_files_only && !opt_force) {
+	if (reg_files_only && !opt_force && !opt_keep_original) {
 		if (pair->src_st.st_mode & (S_ISUID | S_ISGID)) {
 			// gzip rejects setuid and setgid files even
 			// when --force was used. bzip2 doesn't check
@@ -683,7 +691,7 @@ io_open_src_real(file_pair *pair)
 			// and setgid bits there.
 			//
 			// We accept setuid and setgid files if
-			// --force was used. We drop these bits
+			// --force or --keep was used. We drop these bits
 			// explicitly in io_copy_attr().
 			message_warning(_("%s: File has setuid or "
 					"setgid bit set, skipping"),
@@ -747,6 +755,10 @@ io_open_src(const char *src_name)
 	// a statically allocated structure.
 	static file_pair pair;
 
+	// This implicitly also initializes src_st.st_size to zero
+	// which is expected to be <= 0 by default. fstat() isn't
+	// called when reading from standard input but src_st.st_size
+	// is still read.
 	pair = (file_pair){
 		.src_name = src_name,
 		.dest_name = NULL,
@@ -902,20 +914,41 @@ io_open_dest_real(file_pair *pair)
 		}
 	}
 
-#ifndef TUKLIB_DOSLIKE
-	// dest_st isn't used on DOS-like systems except as a dummy
-	// argument to io_unlink(), so don't fstat() on such systems.
 	if (fstat(pair->dest_fd, &pair->dest_st)) {
 		// If fstat() really fails, we have a safe fallback here.
-#	if defined(__VMS)
+#if defined(__VMS)
 		pair->dest_st.st_ino[0] = 0;
 		pair->dest_st.st_ino[1] = 0;
 		pair->dest_st.st_ino[2] = 0;
-#	else
+#else
 		pair->dest_st.st_dev = 0;
 		pair->dest_st.st_ino = 0;
-#	endif
-	} else if (try_sparse && opt_mode == MODE_DECOMPRESS) {
+#endif
+	}
+#if defined(TUKLIB_DOSLIKE) && !defined(__DJGPP__)
+	// Check that the output file is a regular file. We open with O_EXCL
+	// but that doesn't prevent open()/_open() on Windows from opening
+	// files like "con" or "nul".
+	//
+	// With DJGPP this check is done with stat() even before opening
+	// the output file. That method or a variant of it doesn't work on
+	// Windows because on Windows stat()/_stat64() sets st.st_mode so
+	// that S_ISREG(st.st_mode) will be true even for special files.
+	// With fstat()/_fstat64() it works.
+	else if (pair->dest_fd != STDOUT_FILENO
+			&& !S_ISREG(pair->dest_st.st_mode)) {
+		message_error("%s: Destination is not a regular file",
+				pair->dest_name);
+
+		// dest_fd needs to be reset to -1 to keep io_close() working.
+		(void)close(pair->dest_fd);
+		pair->dest_fd = -1;
+
+		free(pair->dest_name);
+		return true;
+	}
+#elif !defined(TUKLIB_DOSLIKE)
+	else if (try_sparse && opt_mode == MODE_DECOMPRESS) {
 		// When writing to standard output, we need to be extra
 		// careful:
 		//  - It may be connected to something else than
@@ -1115,8 +1148,7 @@ io_fix_src_pos(file_pair *pair, size_t rewind_size)
 extern size_t
 io_read(file_pair *pair, io_buf *buf, size_t size)
 {
-	// We use small buffers here.
-	assert(size < SSIZE_MAX);
+	assert(size <= IO_BUFFER_SIZE);
 
 	size_t pos = 0;
 
@@ -1223,7 +1255,7 @@ is_sparse(const io_buf *buf)
 static bool
 io_write_buf(file_pair *pair, const uint8_t *buf, size_t size)
 {
-	assert(size < SSIZE_MAX);
+	assert(size <= IO_BUFFER_SIZE);
 
 	while (size > 0) {
 		const ssize_t amount = write(pair->dest_fd, buf, size);

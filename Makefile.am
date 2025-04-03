@@ -25,7 +25,6 @@ dist_doc_DATA = \
 	NEWS \
 	README \
 	THANKS \
-	TODO \
 	doc/faq.txt \
 	doc/history.txt \
 	doc/xz-file-format.txt \
@@ -52,6 +51,8 @@ EXTRA_DIST = \
 	dos \
 	windows \
 	macosx \
+	cmake \
+	CMakeLists.txt \
 	autogen.sh \
 	Doxyfile.in \
 	COPYING.GPLv2 \
@@ -59,12 +60,13 @@ EXTRA_DIST = \
 	COPYING.LGPLv2.1 \
 	INSTALL.generic \
 	PACKAGERS \
+	TODO \
 	build-aux/manconv.sh \
 	build-aux/version.sh
 
 ACLOCAL_AMFLAGS = -I m4
 
-# List of man pages to conver to PDF and plain text in the dist-hook target.
+# List of man pages to convert to PDF and plain text in the dist-hook target.
 manfiles = \
 	src/xz/xz.1 \
 	src/xzdec/xzdec.1 \
@@ -100,10 +102,11 @@ dist-hook:
 	fi
 
 # This works with GNU tar and gives cleaner package than normal 'make dist'.
-# This also ensures that the man page translations are up to date (dist-hook
+# This also ensures that the translations are up to date (dist-hook
 # would be too late for that).
 mydist:
 	sh "$(srcdir)/src/liblzma/validate_map.sh"
+	cd po && $(MAKE) xz.pot-update
 	cd "$(srcdir)/po4a" && sh update-po
 	VERSION=$(VERSION); \
 	if test -d "$(srcdir)/.git" && type git > /dev/null 2>&1; then \

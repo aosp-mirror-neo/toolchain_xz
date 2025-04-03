@@ -42,7 +42,7 @@ static bool current_filename_printed = false;
 
 /// True if we should print progress indicator and update it automatically
 /// if also verbose >= V_VERBOSE.
-static bool progress_automatic;
+static bool progress_automatic = false;
 
 /// True if message_progress_start() has been called but
 /// message_progress_end() hasn't been called yet.
@@ -119,26 +119,7 @@ message_init(void)
 	// exception, even if --verbose was not used, user can send SIGALRM
 	// to make us print progress information once without automatic
 	// updating.
-	progress_automatic = isatty(STDERR_FILENO);
-
-	// Commented out because COLUMNS is rarely exported to environment.
-	// Most users have at least 80 columns anyway, let's think something
-	// fancy here if enough people complain.
-/*
-	if (progress_automatic) {
-		// stderr is a terminal. Check the COLUMNS environment
-		// variable to see if the terminal is wide enough. If COLUMNS
-		// doesn't exist or it has some unparsable value, we assume
-		// that the terminal is wide enough.
-		const char *columns_str = getenv("COLUMNS");
-		if (columns_str != NULL) {
-			char *endptr;
-			const long columns = strtol(columns_str, &endptr, 10);
-			if (*endptr != '\0' || columns < 80)
-				progress_automatic = false;
-		}
-	}
-*/
+	progress_automatic = is_tty(STDERR_FILENO);
 
 #ifdef SIGALRM
 	// Establish the signal handlers which set a flag to tell us that
@@ -355,11 +336,8 @@ progress_speed(uint64_t uncompressed_pos, uint64_t elapsed)
 	if (elapsed < 3000)
 		return "";
 
-	static const char unit[][8] = {
-		"KiB/s",
-		"MiB/s",
-		"GiB/s",
-	};
+	// The first character of KiB/s, MiB/s, or GiB/s:
+	static const char unit[] = { 'K', 'M', 'G' };
 
 	size_t unit_index = 0;
 
@@ -381,7 +359,7 @@ progress_speed(uint64_t uncompressed_pos, uint64_t elapsed)
 	//  - 999 KiB/s
 	// Use big enough buffer to hold e.g. a multibyte decimal point.
 	static char buf[16];
-	snprintf(buf, sizeof(buf), "%.*f %s",
+	snprintf(buf, sizeof(buf), "%.*f %ciB/s",
 			speed > 9.9 ? 0 : 1, speed, unit[unit_index]);
 	return buf;
 }
@@ -726,7 +704,16 @@ vmessage(enum message_verbosity v, const char *fmt, va_list ap)
 		// This is a translatable string because French needs
 		// a space before a colon.
 		fprintf(stderr, _("%s: "), progname);
+
+#ifdef __clang__
+#	pragma GCC diagnostic push
+#	pragma GCC diagnostic ignored "-Wformat-nonliteral"
+#endif
 		vfprintf(stderr, fmt, ap);
+#ifdef __clang__
+#	pragma GCC diagnostic pop
+#endif
+
 		fputc('\n', stderr);
 
 		signals_unblock();
@@ -1116,6 +1103,9 @@ message_help(bool long_help)
 "  -k, --keep          keep (don't delete) input files\n"
 "  -f, --force         force overwrite of output file and (de)compress links\n"
 "  -c, --stdout        write to standard output and don't delete input files"));
+	// NOTE: --to-stdout isn't included above because it's not
+	// the recommended spelling. It was copied from gzip but other
+	// compressors with gzip-like syntax don't support it.
 
 	if (long_help) {
 		puts(_(

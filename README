@@ -113,8 +113,8 @@ XZ Utils
     Since the liblzma API has similarities to the zlib API, some people
     may find it useful to read the zlib docs and tutorial too:
 
-        http://zlib.net/manual.html
-        http://zlib.net/zlib_how.html
+        https://zlib.net/manual.html
+        https://zlib.net/zlib_how.html
 
 
 2. Version numbering
@@ -204,7 +204,7 @@ XZ Utils
 
     Several strings will change in a future version of xz so if you
     wish to start a new translation, look at the code in the xz git
-    repostiory instead of a 5.2.x release.
+    repository instead of a 5.2.x release.
 
 
 5. Other implementations of the .xz format
@@ -213,8 +213,8 @@ XZ Utils
     7-Zip and the p7zip port of 7-Zip support the .xz format starting
     from the version 9.00alpha.
 
-        http://7-zip.org/
-        http://p7zip.sourceforge.net/
+        https://7-zip.org/
+        https://p7zip.sourceforge.net/
 
     XZ Embedded is a limited implementation written for use in the Linux
     kernel, but it is also suitable for other embedded use.
@@ -225,12 +225,13 @@ XZ Utils
 6. Contact information
 ----------------------
 
-    If you have questions, bug reports, patches etc. related to XZ Utils,
-    contact Lasse Collin <lasse.collin@tukaani.org> (in Finnish or English).
-    I'm sometimes slow at replying. If you haven't got a reply within two
-    weeks, assume that your email has got lost and resend it or use IRC.
+    XZ Utils in general:
+      - Home page: https://tukaani.org/xz/
+      - Email to maintainer(s): xz@tukaani.org
+      - IRC: #tukaani on Libera Chat
+      - GitHub: https://github.com/tukaani-project/xz
 
-    You can find me also from #tukaani on Freenode; my nick is Larhzu.
-    The channel tends to be pretty quiet, so just ask your question and
-    someone may wake up.
+    Lead maintainer:
+      - Email: Lasse Collin <lasse.collin@tukaani.org>
+      - IRC: Larhzu on Libera Chat
 

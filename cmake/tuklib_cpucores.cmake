@@ -89,7 +89,12 @@ function(tuklib_cpucores_internal_check)
             #include <sys/sysctl.h>
             int main(void)
             {
+            #ifdef HW_NCPUONLINE
+                /* This is preferred on OpenBSD, see tuklib_cpucores.c. */
+                int name[2] = { CTL_HW, HW_NCPUONLINE };
+            #else
                 int name[2] = { CTL_HW, HW_NCPU };
+            #endif
                 int cpus;
                 size_t cpus_size = sizeof(cpus);
                 sysctl(name, 2, &cpus, &cpus_size, NULL, 0);
@@ -154,12 +159,12 @@ function(tuklib_cpucores_internal_check)
 endfunction()
 
 function(tuklib_cpucores TARGET_OR_ALL)
-    if(NOT DEFINED CACHE{TUKLIB_CPUCORES_FOUND})
+    if(NOT DEFINED TUKLIB_CPUCORES_FOUND)
         message(STATUS
                 "Checking how to detect the number of available CPU cores")
         tuklib_cpucores_internal_check()
 
-        if(DEFINED CACHE{TUKLIB_CPUCORES_DEFINITIONS})
+        if(DEFINED TUKLIB_CPUCORES_DEFINITIONS)
             set(TUKLIB_CPUCORES_FOUND 1 CACHE INTERNAL "")
         else()
             set(TUKLIB_CPUCORES_FOUND 0 CACHE INTERNAL "")

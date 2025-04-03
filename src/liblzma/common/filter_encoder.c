@@ -37,9 +37,12 @@ typedef struct {
 	uint64_t (*block_size)(const void *options);
 
 	/// Tells the size of the Filter Properties field. If options are
-	/// invalid, UINT32_MAX is returned. If this is NULL, props_size_fixed
-	/// is used.
+	/// invalid, LZMA_OPTIONS_ERROR is returned and size is set to
+	/// UINT32_MAX.
 	lzma_ret (*props_size_get)(uint32_t *size, const void *options);
+
+	/// Some filters will always have the same size Filter Properties
+	/// field. If props_size_get is NULL, this value is used.
 	uint32_t props_size_fixed;
 
 	/// Encodes Filter Properties.
@@ -59,7 +62,7 @@ static const lzma_filter_encoder encoders[] = {
 		.id = LZMA_FILTER_LZMA1,
 		.init = &lzma_lzma_encoder_init,
 		.memusage = &lzma_lzma_encoder_memusage,
-		.block_size = NULL, // FIXME
+		.block_size = NULL, // Not needed for LZMA1
 		.props_size_get = NULL,
 		.props_size_fixed = 5,
 		.props_encode = &lzma_lzma_props_encode,
@@ -70,7 +73,7 @@ static const lzma_filter_encoder encoders[] = {
 		.id = LZMA_FILTER_LZMA2,
 		.init = &lzma_lzma2_encoder_init,
 		.memusage = &lzma_lzma2_encoder_memusage,
-		.block_size = &lzma_lzma2_block_size, // FIXME
+		.block_size = &lzma_lzma2_block_size,
 		.props_size_get = NULL,
 		.props_size_fixed = 1,
 		.props_encode = &lzma_lzma2_props_encode,
@@ -161,6 +164,16 @@ encoder_find(lzma_vli id)
 }
 
 
+// lzma_filter_coder begins with the same members as lzma_filter_encoder.
+// This function is a wrapper with a type that is compatible with the
+// typedef of lzma_filter_find in filter_common.h.
+static const lzma_filter_coder *
+coder_find(lzma_vli id)
+{
+	return (const lzma_filter_coder *)encoder_find(id);
+}
+
+
 extern LZMA_API(lzma_bool)
 lzma_filter_encoder_is_supported(lzma_vli id)
 {
@@ -197,18 +210,18 @@ lzma_filters_update(lzma_stream *strm, const lzma_filter *filters)
 
 extern lzma_ret
 lzma_raw_encoder_init(lzma_next_coder *next, const lzma_allocator *allocator,
-		const lzma_filter *options)
+		const lzma_filter *filters)
 {
 	return lzma_raw_coder_init(next, allocator,
-			options, (lzma_filter_find)(&encoder_find), true);
+			filters, &coder_find, true);
 }
 
 
 extern LZMA_API(lzma_ret)
-lzma_raw_encoder(lzma_stream *strm, const lzma_filter *options)
+lzma_raw_encoder(lzma_stream *strm, const lzma_filter *filters)
 {
-	lzma_next_strm_init(lzma_raw_coder_init, strm, options,
-			(lzma_filter_find)(&encoder_find), true);
+	lzma_next_strm_init(lzma_raw_coder_init, strm, filters,
+			&coder_find, true);
 
 	strm->internal->supported_actions[LZMA_RUN] = true;
 	strm->internal->supported_actions[LZMA_SYNC_FLUSH] = true;
@@ -221,8 +234,7 @@ lzma_raw_encoder(lzma_stream *strm, const lzma_filter *options)
 extern LZMA_API(uint64_t)
 lzma_raw_encoder_memusage(const lzma_filter *filters)
 {
-	return lzma_raw_coder_memusage(
-			(lzma_filter_find)(&encoder_find), filters);
+	return lzma_raw_coder_memusage(&coder_find, filters);
 }
 
 

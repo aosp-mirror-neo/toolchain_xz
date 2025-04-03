@@ -5,6 +5,7 @@
 
 .deps
 .libs
+*.a
 *.la
 *.lo
 *.o
@@ -31,6 +32,8 @@ build-aux/install-sh
 build-aux/ltmain.sh
 build-aux/missing
 build-aux/test-driver
+
+/doc/html
 
 /src/liblzma/liblzma.pc
 /src/lzmainfo/lzmainfo
@@ -68,3 +71,25 @@ build-aux/test-driver
 /src/liblzma/api/Makefile
 /src/lzmainfo/Makefile
 /src/xzdec/Makefile
+
+/CMakeCache.txt
+/CMakeFiles
+/CTestTestfile.cmake
+/cmake_install.cmake
+/DartConfiguration.tcl
+/liblzma-config-version.cmake
+/liblzma-config.cmake
+/lzcat
+/lzcat.1
+/lzma
+/lzma.1
+/Testing
+/tests_bin/
+/unlzma
+/unlzma.1
+/unxz
+/unxz.1
+/xz
+/xzcat
+/xzcat.1
+/xzdec

@@ -52,6 +52,12 @@
 // and such functions.
 #if defined(__INTEL_COMPILER) && (__INTEL_COMPILER >= 1500)
 #	include <immintrin.h>
+// Only include <intrin.h> when it is needed. GCC and Clang can both
+// use __builtin's, so we only need Windows instrincs when using MSVC.
+// GCC and Clang can set _MSC_VER on Windows, so we need to exclude these
+// cases explicitly.
+#elif defined(_MSC_VER) && !TUKLIB_GNUC_REQ(3, 4) && !defined(__clang__)
+#	include <intrin.h>
 #endif
 
 
@@ -421,7 +427,7 @@ write32le(uint8_t *buf, uint32_t num)
 // aligned but some compilers have language extensions to do that. With
 // such language extensions the memcpy() method gives excellent results.
 //
-// What to do on a strict-align system when no known language extentensions
+// What to do on a strict-align system when no known language extensions
 // are available? Falling back to byte-by-byte access would be safe but ruin
 // optimizations that have been made specifically with aligned access in mind.
 // As a compromise, aligned reads will fall back to non-compliant type punning
@@ -588,7 +594,7 @@ bsr32(uint32_t n)
 #if defined(__INTEL_COMPILER)
 	return _bit_scan_reverse(n);
 
-#elif TUKLIB_GNUC_REQ(3, 4) && UINT_MAX == UINT32_MAX
+#elif (TUKLIB_GNUC_REQ(3, 4) || defined(__clang__)) && UINT_MAX == UINT32_MAX
 	// GCC >= 3.4 has __builtin_clz(), which gives good results on
 	// multiple architectures. On x86, __builtin_clz() ^ 31U becomes
 	// either plain BSR (so the XOR gets optimized away) or LZCNT and
@@ -642,7 +648,7 @@ clz32(uint32_t n)
 #if defined(__INTEL_COMPILER)
 	return _bit_scan_reverse(n) ^ 31U;
 
-#elif TUKLIB_GNUC_REQ(3, 4) && UINT_MAX == UINT32_MAX
+#elif (TUKLIB_GNUC_REQ(3, 4) || defined(__clang__)) && UINT_MAX == UINT32_MAX
 	return (uint32_t)__builtin_clz(n);
 
 #elif defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
@@ -694,7 +700,7 @@ ctz32(uint32_t n)
 #if defined(__INTEL_COMPILER)
 	return _bit_scan_forward(n);
 
-#elif TUKLIB_GNUC_REQ(3, 4) && UINT_MAX >= UINT32_MAX
+#elif (TUKLIB_GNUC_REQ(3, 4) || defined(__clang__)) && UINT_MAX >= UINT32_MAX
 	return (uint32_t)__builtin_ctz(n);
 
 #elif defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))

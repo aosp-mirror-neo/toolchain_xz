@@ -9,11 +9,9 @@
 #
 # On some platforms this builds also xz and xzdec, but these are
 # highly experimental and meant for testing only:
-#   - No large file support on those 32-bit platforms that need it
 #   - No replacement getopt_long(), libc must have it
 #   - No sandboxing support
 #   - No translations
-#   - No xz symlinks are installed
 #
 # Other missing things:
 #   - No xzgrep or other scripts or their symlinks
@@ -47,10 +45,11 @@
 #
 #############################################################################
 
-cmake_minimum_required(VERSION 3.13...3.16 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.13...3.29 FATAL_ERROR)
 
 include(CheckSymbolExists)
 include(CheckStructHasMember)
+include(cmake/tuklib_large_file_support.cmake)
 include(cmake/tuklib_integer.cmake)
 include(cmake/tuklib_cpucores.cmake)
 include(cmake/tuklib_physmem.cmake)
@@ -70,11 +69,54 @@ string(REGEX REPLACE
 # Among other things, this gives us variables xz_VERSION and xz_VERSION_MAJOR.
 project(xz VERSION "${XZ_VERSION}" LANGUAGES C)
 
+# We need a compiler that supports enough C99 or newer (variable-length arrays
+# aren't needed, those are optional in C17). Setting CMAKE_C_STANDARD here
+# makes it the default for all targets. It doesn't affect the INTERFACE so
+# liblzma::liblzma won't end up with INTERFACE_COMPILE_FEATURES "c_std_99"
+# (the API headers are C89 and C++ compatible).
+set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+
+# On Apple OSes, don't build executables as bundles:
+set(CMAKE_MACOSX_BUNDLE OFF)
+
+# windres from GNU binutils can be tricky with command line arguments
+# that contain spaces or other funny characters. Unfortunately we need
+# a space in PACKAGE_NAME. Using \x20 to encode the US-ASCII space seems
+# to work in both cmd.exe and /bin/sh.
+#
+# However, even \x20 isn't enough in all situations, resulting in
+# "syntax error" from windres. Using --use-temp-file prevents windres
+# from using popen() and this seems to fix the problem.
+#
+# llvm-windres from Clang/LLVM 16.0.6 and older: The \x20 results
+# in "XZx20Utils" in the compiled binary. The option --use-temp-file
+# makes no difference.
+#
+# llvm-windres 17.0.0 and later: It emulates GNU windres more accurately, so
+# the workarounds used with GNU windres must be used with llvm-windres too.
+#
+# CMake 3.27 doesn't have CMAKE_RC_COMPILER_ID so we rely on
+# CMAKE_C_COMPILER_ID.
+if((MINGW OR CYGWIN OR MSYS) AND (
+        NOT CMAKE_C_COMPILER_ID STREQUAL "Clang" OR
+        CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL "17"))
+    # Use workarounds with GNU windres and llvm-windres >= 17.0.0. The \x20
+    # in PACKAGE_NAME works with gcc and clang too so we don't need to worry
+    # how to pass different flags to windres and the C compiler.
+    string(APPEND CMAKE_RC_FLAGS " --use-temp-file")
+    set(PACKAGE_NAME "XZ\\x20Utils")
+else()
+    # Elsewhere a space is safe. This also keeps things compatible with
+    # EBCDIC in case CMake-based build is ever done on such a system.
+    set(PACKAGE_NAME "XZ Utils")
+endif()
+
 # Definitions common to all targets:
 add_compile_definitions(
     # Package info:
-    PACKAGE_NAME="XZ Utils"
-    PACKAGE_BUGREPORT="lasse.collin@tukaani.org"
+    PACKAGE_NAME="${PACKAGE_NAME}"
+    PACKAGE_BUGREPORT="xz@tukaani.org"
     PACKAGE_URL="https://tukaani.org/xz/"
 
     # Features:
@@ -122,29 +164,36 @@ add_compile_definitions(
 # it also adds the definitions to CMAKE_REQUIRED_DEFINITIONS.
 tuklib_use_system_extensions(ALL)
 
+# Check for large file support. It's required on some 32-bit platforms and
+# even on 64-bit MinGW-w64 to get 64-bit off_t. This can be forced off on
+# the CMake command line if needed: -DLARGE_FILE_SUPPORT=OFF
+tuklib_large_file_support(ALL)
+
 # This is needed by liblzma and xz.
 tuklib_integer(ALL)
 
 # Check for clock_gettime(). Do this before checking for threading so
 # that we know there if CLOCK_MONOTONIC is available.
-if(NOT WIN32 AND NOT DEFINED CACHE{HAVE_CLOCK_GETTIME})
+if(NOT WIN32)
     check_symbol_exists(clock_gettime time.h HAVE_CLOCK_GETTIME)
+
     if(NOT HAVE_CLOCK_GETTIME)
         # With glibc <= 2.17 or Solaris 10 this needs librt.
-        unset(HAVE_CLOCK_GETTIME CACHE)
-
+        # Add librt for the next check for HAVE_CLOCK_GETTIME. If it is
+        # found after including the library, we know that librt is required.
         list(INSERT CMAKE_REQUIRED_LIBRARIES 0 rt)
-        check_symbol_exists(clock_gettime time.h HAVE_CLOCK_GETTIME)
+        check_symbol_exists(clock_gettime time.h HAVE_CLOCK_GETTIME_LIBRT)
 
-        # If it was found now, add it to all targets and keep it
-        # in CMAKE_REQUIRED_LIBRARIES for further tests too.
-        if(HAVE_CLOCK_GETTIME)
+        # If it was found now, add librt to all targets and keep it in
+        # CMAKE_REQUIRED_LIBRARIES for further tests too.
+        if(HAVE_CLOCK_GETTIME_LIBRT)
             link_libraries(rt)
         else()
             list(REMOVE_AT CMAKE_REQUIRED_LIBRARIES 0)
         endif()
     endif()
-    if(HAVE_CLOCK_GETTIME)
+
+    if(HAVE_CLOCK_GETTIME OR HAVE_CLOCK_GETTIME_LIBRT)
         # Check if CLOCK_MONOTONIC is available for clock_gettime().
         check_symbol_exists(CLOCK_MONOTONIC time.h HAVE_DECL_CLOCK_MONOTONIC)
 
@@ -161,7 +210,17 @@ endif()
 set(THREADS_PREFER_PTHREAD_FLAG TRUE)
 find_package(Threads REQUIRED)
 if(CMAKE_USE_WIN32_THREADS_INIT)
-    add_compile_definitions(MYTHREAD_VISTA)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+        # Define to 1 when using Windows 95 (and thus XP) compatible threads. This
+        # avoids use of features that were added in Windows Vista.
+        # This is used for 32-bit x86 builds for compatibility reasons since it
+        # makes no measurable difference in performance compared to Vista threads.
+        add_compile_definitions(MYTHREAD_WIN95)
+    else()
+        # Define to 1 when using Windows Vista compatible threads. This uses features
+        # that are not available on Windows XP.
+        add_compile_definitions(MYTHREAD_VISTA)
+    endif()
 else()
     add_compile_definitions(MYTHREAD_POSIX)
 
@@ -186,6 +245,69 @@ endif()
 #############################################################################
 
 option(BUILD_SHARED_LIBS "Build liblzma as a shared library instead of static")
+
+if(NOT WIN32)
+    # Symbol versioning only affects ELF shared libraries. The option is
+    # ignored for static libraries.
+    #
+    # Determine the default value so that it's always set with
+    # shared libraries in mind which helps if the build dir is reconfigured
+    # from static to shared libs without resetting the cache variables.
+    set(SYMBOL_VERSIONING_DEFAULT OFF)
+
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+            (CMAKE_SYSTEM_PROCESSOR MATCHES "[Mm]icro[Bb]laze" OR
+             CMAKE_C_COMPILER_ID STREQUAL "NVHPC"))
+        # As a special case, GNU/Linux on MicroBlaze gets the generic
+        # symbol versioning because GCC 12 doesn't support the __symver__
+        # attribute on MicroBlaze. On Linux, CMAKE_SYSTEM_PROCESSOR comes
+        # from "uname -m" for native builds (should be "microblaze") or from
+        # the CMake toolchain file (not perfectly standardized but it very
+        # likely has "microblaze" in lower case or mixed case somewhere in
+        # the string).
+        #
+        # NVIDIA HPC Compiler doesn't support symbol versioning but
+        # it uses the linked from the system so the linker script
+        # can still be used to get the generic symbol versioning.
+        set(SYMBOL_VERSIONING_DEFAULT "generic")
+
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # GNU/Linux-specific symbol versioning for shared liblzma.
+        # This includes a few extra compatibility symbols for RHEL/CentOS 7
+        # which are pointless on non-glibc non-Linux systems.
+        #
+        # Avoid symvers on Linux with non-glibc like musl and uClibc.
+        # In Autoconf it's enough to check that $host_os equals linux-gnu
+        # instead of, for example, linux-musl. CMake doesn't provide such
+        # a method.
+        #
+        # This check is here for now since it's not strictly required
+        # by anything else.
+        check_c_source_compiles(
+                "#include <features.h>
+                #if defined(__GLIBC__) && !defined(__UCLIBC__)
+                int main(void) { return 0; }
+                #else
+                compile error
+                #endif
+            "
+            IS_LINUX_WITH_GLIBC)
+
+        if(IS_LINUX_WITH_GLIBC)
+            set(SYMBOL_VERSIONING_DEFAULT "linux")
+        endif()
+
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
+        set(SYMBOL_VERSIONING_DEFAULT "generic")
+    endif()
+
+    set(SYMBOL_VERSIONING "${SYMBOL_VERSIONING_DEFAULT}" CACHE STRING
+        "Enable ELF shared library symbol versioning (OFF, generic, linux)")
+
+    # Show a dropdown menu in CMake GUI:
+    set_property(CACHE SYMBOL_VERSIONING PROPERTY STRINGS "OFF;generic;linux")
+endif()
+
 
 add_library(liblzma
     src/common/mythread.h
@@ -402,20 +524,38 @@ if(WIN32)
         # Add the Windows resource file for liblzma.dll.
         target_sources(liblzma PRIVATE src/liblzma/liblzma_w32res.rc)
 
+        set_target_properties(liblzma PROPERTIES
+            LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/common/common_w32res.rc"
+        )
+
         # Export the public API symbols with __declspec(dllexport).
         target_compile_definitions(liblzma PRIVATE DLL_EXPORT)
     else()
         # Disable __declspec(dllimport) when linking against static liblzma.
         target_compile_definitions(liblzma INTERFACE LZMA_API_STATIC)
     endif()
-elseif(CMAKE_SYSTEM_NAME MATCHES "^Linux$|^FreeBSD$")
-    # Symbol versioning for shared liblzma. This doesn't affect static builds.
+elseif(BUILD_SHARED_LIBS AND SYMBOL_VERSIONING STREQUAL "linux")
+    # Note that adding link options doesn't affect static builds
+    # but HAVE_SYMBOL_VERSIONS_LINUX must not be used with static builds
+    # because it would put symbol versions into the static library which
+    # can cause problems. It's clearer if all symver related things are
+    # omitted when not building a shared library.
+    #
+    # NOTE: Set it explicitly to 1 to make it clear that versioning is
+    # done unconditionally in the C files.
+    target_compile_definitions(liblzma PRIVATE HAVE_SYMBOL_VERSIONS_LINUX=1)
     target_link_options(liblzma PRIVATE
-        "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/src/liblzma/liblzma.map"
+        "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/src/liblzma/liblzma_linux.map"
     )
     set_target_properties(liblzma PROPERTIES
-        LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/liblzma/liblzma.map"
-        LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/common/common_w32res.rc"
+        LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/liblzma/liblzma_linux.map"
+    )
+elseif(BUILD_SHARED_LIBS AND SYMBOL_VERSIONING STREQUAL "generic")
+    target_link_options(liblzma PRIVATE
+        "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/src/liblzma/liblzma_generic.map"
+    )
+    set_target_properties(liblzma PROPERTIES
+        LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/liblzma/liblzma_generic.map"
     )
 endif()
 
@@ -429,24 +569,39 @@ set_target_properties(liblzma PROPERTIES
     # It's liblzma.so or liblzma.dll, not libliblzma.so or lzma.dll.
     # Avoid the name lzma.dll because it would conflict with LZMA SDK.
     PREFIX ""
+    IMPORT_PREFIX ""
 )
 
-# Create liblzmaConfigVersion.cmake.
+# Create liblzma-config-version.cmake. We use this spelling instead of
+# liblzmaConfig.cmake to make find_package work in case insensitive manner
+# even with case sensitive file systems. This gives more consistent behavior
+# between operating systems.
 #
 # FIXME: SameMajorVersion is correct for stable releases but it is wrong
 # for development releases where each release may have incompatible changes.
 include(CMakePackageConfigHelpers)
 write_basic_package_version_file(
-    "${CMAKE_CURRENT_BINARY_DIR}/liblzmaConfigVersion.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/liblzma-config-version.cmake"
     VERSION "${liblzma_VERSION}"
     COMPATIBILITY SameMajorVersion)
 
-# Create liblzmaConfig.cmake.
-file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/liblzmaConfig.cmake"
+# Create liblzma-config.cmake.
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/liblzma-config.cmake"
 "include(CMakeFindDependencyMacro)
 set(THREADS_PREFER_PTHREAD_FLAG TRUE)
 find_dependency(Threads)
-include(\"\${CMAKE_CURRENT_LIST_DIR}/liblzmaTargets.cmake\")
+
+include(\"\${CMAKE_CURRENT_LIST_DIR}/liblzma-targets.cmake\")
+
+if(NOT TARGET LibLZMA::LibLZMA)
+    # Be compatible with the spelling used by the FindLibLZMA module. This
+    # doesn't use ALIAS because it would make CMake resolve LibLZMA::LibLZMA
+    # to liblzma::liblzma instead of keeping the original spelling. Keeping
+    # the original spelling is important for good FindLibLZMA compatibility.
+    add_library(LibLZMA::LibLZMA INTERFACE IMPORTED)
+    set_target_properties(LibLZMA::LibLZMA PROPERTIES
+                          INTERFACE_LINK_LIBRARIES liblzma::liblzma)
+endif()
 ")
 
 # Set CMAKE_INSTALL_LIBDIR and friends.
@@ -478,12 +633,12 @@ set(liblzma_INSTALL_CMAKEDIR
 
 install(EXPORT liblzmaTargets
         NAMESPACE liblzma::
-        FILE liblzmaTargets.cmake
+        FILE liblzma-targets.cmake
         DESTINATION "${liblzma_INSTALL_CMAKEDIR}"
         COMPONENT liblzma_Development)
 
-install(FILES "${CMAKE_CURRENT_BINARY_DIR}/liblzmaConfig.cmake"
-              "${CMAKE_CURRENT_BINARY_DIR}/liblzmaConfigVersion.cmake"
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/liblzma-config.cmake"
+              "${CMAKE_CURRENT_BINARY_DIR}/liblzma-config-version.cmake"
         DESTINATION "${liblzma_INSTALL_CMAKEDIR}"
         COMPONENT liblzma_Development)
 
@@ -519,6 +674,14 @@ if(HAVE_GETOPT_LONG)
     )
 
     target_link_libraries(xzdec PRIVATE liblzma)
+
+    if(WIN32)
+        # Add the Windows resource file for xzdec.exe.
+        target_sources(xzdec PRIVATE src/xzdec/xzdec_w32res.rc)
+        set_target_properties(xzdec PROPERTIES
+            LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/common/common_w32res.rc"
+        )
+    endif()
 
     tuklib_progname(xzdec)
 
@@ -591,6 +754,14 @@ if(NOT MSVC AND HAVE_GETOPT_LONG)
 
     target_compile_definitions(xz PRIVATE ASSUME_RAM=128)
 
+    if(WIN32)
+        # Add the Windows resource file for xz.exe.
+        target_sources(xz PRIVATE src/xz/xz_w32res.rc)
+        set_target_properties(xz PROPERTIES
+            LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/common/common_w32res.rc"
+        )
+    endif()
+
     tuklib_progname(xz)
     tuklib_mbstr(xz)
 
@@ -653,7 +824,45 @@ if(NOT MSVC AND HAVE_GETOPT_LONG)
             RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
                     COMPONENT xz)
 
-    install(FILES src/xz/xz.1
-            DESTINATION "${CMAKE_INSTALL_MANDIR}/man1"
-            COMPONENT xz)
+    if(UNIX)
+        install(FILES src/xz/xz.1
+                DESTINATION "${CMAKE_INSTALL_MANDIR}/man1"
+                COMPONENT xz)
+
+        option(CREATE_XZ_SYMLINKS "Create unxz and xzcat symlinks" ON)
+        option(CREATE_LZMA_SYMLINKS "Create lzma, unlzma, and lzcat symlinks"
+               ON)
+        set(XZ_LINKS)
+
+        if(CREATE_XZ_SYMLINKS)
+            list(APPEND XZ_LINKS "unxz" "xzcat")
+        endif()
+
+        if(CREATE_LZMA_SYMLINKS)
+            list(APPEND XZ_LINKS "lzma" "unlzma" "lzcat")
+        endif()
+
+        # Create symlinks in the build directory and then install them.
+        #
+        # The symlinks do not likely need any special extension since
+        # even on Windows the symlink can still be executed without
+        # the .exe extension.
+        foreach(LINK IN LISTS XZ_LINKS)
+            add_custom_target("${LINK}" ALL
+                "${CMAKE_COMMAND}" -E create_symlink
+                    "$<TARGET_FILE_NAME:xz>" "${LINK}"
+                BYPRODUCTS "${LINK}"
+                VERBATIM)
+            install(FILES "${CMAKE_CURRENT_BINARY_DIR}/${LINK}"
+                    DESTINATION "${CMAKE_INSTALL_BINDIR}"
+                    COMPONENT xz)
+            add_custom_target("${LINK}.1" ALL
+                "${CMAKE_COMMAND}" -E create_symlink "xz.1" "${LINK}.1"
+                BYPRODUCTS "${LINK}.1"
+                VERBATIM)
+            install(FILES "${CMAKE_CURRENT_BINARY_DIR}/${LINK}.1"
+                    DESTINATION "${CMAKE_INSTALL_MANDIR}/man1"
+                    COMPONENT xz)
+        endforeach()
+    endif()
 endif()

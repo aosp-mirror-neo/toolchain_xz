@@ -18,11 +18,11 @@
 AC_PREREQ([2.69])
 
 AC_INIT([XZ Utils], m4_esyscmd([/bin/sh build-aux/version.sh]),
-	[lasse.collin@tukaani.org], [xz], [https://tukaani.org/xz/])
+	[xz@tukaani.org], [xz], [https://tukaani.org/xz/])
 AC_CONFIG_SRCDIR([src/liblzma/common/common.h])
 AC_CONFIG_AUX_DIR([build-aux])
 AC_CONFIG_MACRO_DIR([m4])
-AC_CONFIG_HEADER([config.h])
+AC_CONFIG_HEADERS([config.h])
 
 echo
 echo "$PACKAGE_STRING"
@@ -210,6 +210,10 @@ AC_ARG_ENABLE([match-finders], AS_HELP_STRING([--enable-match-finders=LIST],
 	[enable_match_finders=SUPPORTED_MATCH_FINDERS])
 enable_match_finders=`echo "$enable_match_finders" | sed 's/,/ /g'`
 if test "x$enable_encoder_lz" = xyes ; then
+	if test -z "$enable_match_finders"; then
+		AC_MSG_ERROR([At least one match finder is required for an LZ-based encoder.])
+	fi
+
 	for arg in $enable_match_finders
 		do
 		case $arg in m4_foreach([NAME], [SUPPORTED_MATCH_FINDERS], [
@@ -465,33 +469,6 @@ AC_ARG_ENABLE([doc], [AS_HELP_STRING([--disable-doc],
 AM_CONDITIONAL([COND_DOC], [test x$enable_doc != xno])
 
 
-#####################
-# Symbol versioning #
-#####################
-
-AC_MSG_CHECKING([if library symbol versioning should be used])
-AC_ARG_ENABLE([symbol-versions], [AS_HELP_STRING([--enable-symbol-versions],
-		[Use symbol versioning for liblzma. Enabled by default on
-		GNU/Linux, other GNU-based systems, and FreeBSD.])],
-	[], [enable_symbol_versions=auto])
-if test "x$enable_symbol_versions" = xauto; then
-	case $host_os in
-		# NOTE: Even if one omits -gnu on GNU/Linux (e.g.
-		# i486-slackware-linux), configure will (via config.sub)
-		# append -gnu (e.g. i486-slackware-linux-gnu), and this
-		# test will work correctly.
-		gnu* | *-gnu* | freebsd*)
-			enable_symbol_versions=yes
-			;;
-		*)
-			enable_symbol_versions=no
-			;;
-	esac
-fi
-AC_MSG_RESULT([$enable_symbol_versions])
-AM_CONDITIONAL([COND_SYMVERS], [test "x$enable_symbol_versions" = xyes])
-
-
 ##############
 # Sandboxing #
 ##############
@@ -567,12 +544,15 @@ echo "Initializing Automake:"
 
 # We don't use "subdir-objects" yet because it breaks "make distclean" when
 # dependencies are enabled (as of Automake 1.14.1) due to this bug:
-# http://debbugs.gnu.org/cgi/bugreport.cgi?bug=17354
+# https://debbugs.gnu.org/cgi/bugreport.cgi?bug=17354
 # The -Wno-unsupported is used to silence warnings about missing
 # "subdir-objects".
 AM_INIT_AUTOMAKE([1.12 foreign tar-v7 filename-length-max=99 serial-tests -Wno-unsupported])
 AC_PROG_LN_S
 
+dnl # Autoconf >= 2.70 warns that AC_PROG_CC_C99 is obsolete. However,
+dnl # we have to keep using AC_PROG_CC_C99 instead of AC_PROG_CC
+dnl # as long as we try to be compatible with Autoconf 2.69.
 AC_PROG_CC_C99
 if test x$ac_cv_prog_cc_c99 = xno ; then
 	AC_MSG_ERROR([No C99 compiler was found.])
@@ -582,8 +562,8 @@ AM_PROG_CC_C_O
 AM_PROG_AS
 AC_USE_SYSTEM_EXTENSIONS
 
-case $enable_threads in
-	posix)
+AS_CASE([$enable_threads],
+	[posix], [
 		echo
 		echo "POSIX threading support:"
 		AX_PTHREAD([:]) dnl We don't need the HAVE_PTHREAD macro.
@@ -611,19 +591,19 @@ case $enable_threads in
 		AC_CHECK_FUNCS([clock_gettime pthread_condattr_setclock])
 		AC_CHECK_DECLS([CLOCK_MONOTONIC], [], [], [[#include <time.h>]])
 		CFLAGS=$OLD_CFLAGS
-		;;
-	win95)
+	],
+	[win95], [
 		AC_DEFINE([MYTHREAD_WIN95], [1], [Define to 1 when using
 			Windows 95 (and thus XP) compatible threads.
 			This avoids use of features that were added in
 			Windows Vista.])
-		;;
-	vista)
+	],
+	[vista], [
 		AC_DEFINE([MYTHREAD_VISTA], [1], [Define to 1 when using
 			Windows Vista compatible threads. This uses
 			features that are not available on Windows XP.])
-		;;
-esac
+	]
+)
 AM_CONDITIONAL([COND_THREADS], [test "x$enable_threads" != xno])
 
 echo
@@ -637,6 +617,128 @@ LT_LANG([Windows Resource])
 # breaks only on Windows (at least for now) if the user enables only some
 # libs as shared.
 AM_CONDITIONAL([COND_SHARED], [test "x$enable_shared" != xno])
+
+#####################
+# Symbol versioning #
+#####################
+
+# NOTE: This checks if we are building shared or static library
+# and if --with-pic or --without-pic was used. Thus this check
+# must be after Libtool initialization.
+AC_MSG_CHECKING([if library symbol versioning should be used])
+AC_ARG_ENABLE([symbol-versions], [AS_HELP_STRING([--enable-symbol-versions],
+		[Use symbol versioning for liblzma. Enabled by default on
+		GNU/Linux, other GNU-based systems, and FreeBSD.])],
+	[], [enable_symbol_versions=auto])
+if test "x$enable_symbol_versions" = xauto; then
+	case $host_os in
+		# NOTE: Even if one omits -gnu on GNU/Linux (e.g.
+		# i486-slackware-linux), configure will (via config.sub)
+		# append -gnu (e.g. i486-slackware-linux-gnu), and this
+		# test will work correctly.
+		gnu* | *-gnu* | freebsd*)
+			enable_symbol_versions=yes
+			;;
+		*)
+			enable_symbol_versions=no
+			;;
+	esac
+fi
+
+# There are two variants for symbol versioning.
+# See src/liblzma/validate_map.sh for details.
+#
+# On GNU/Linux, extra symbols are added in the C code. These extra symbols
+# must not be put into a static library as they can cause problems (and
+# even if they didn't cause problems, they would be useless). On other
+# systems symbol versioning may be used too but there is no problem as only
+# a linker script is specified in src/liblzma/Makefile.am and that isn't
+# used when creating a static library.
+#
+# Libtool always uses -DPIC when building shared libraries by default and
+# doesn't use it for static libs by default. This can be overriden with
+# --with-pic and --without-pic though. As long as neither --with-pic nor
+# --without-pic is used then we can use #ifdef PIC to detect if the file is
+# being built for a shared library.
+AS_IF([test "x$enable_symbol_versions" = xno], [
+	enable_symbol_versions=no
+	AC_MSG_RESULT([no])
+], [test "x$enable_shared" = xno], [
+	enable_symbol_versions=no
+	AC_MSG_RESULT([no (not building a shared library)])
+], [
+	# "yes" means that symbol version are to be used but we need to
+	# autodetect which variant to use.
+	if test "x$enable_symbol_versions" = xyes ; then
+		case "$host_cpu-$host_os" in
+			microblaze*)
+				# GCC 12 on MicroBlaze doesn't support
+				# __symver__ attribute. It's simplest and
+				# safest to use the generic version on that
+				# platform since then only the linker script
+				# is needed. The RHEL/CentOS 7 compatibility
+				# symbols don't matter on MicroBlaze.
+				enable_symbol_versions=generic
+				;;
+			*-linux*)
+				# NVIDIA HPC Compiler doesn't support symbol
+				# versioning but the linker script can still
+				# be used.
+				AC_EGREP_CPP([use_generic_symbol_versioning],
+					[#ifdef __NVCOMPILER
+					use_generic_symbol_versioning
+					#endif],
+					[enable_symbol_versions=generic],
+					[enable_symbol_versions=linux])
+				;;
+			*)
+				enable_symbol_versions=generic
+				;;
+		esac
+	fi
+
+	if test "x$enable_symbol_versions" = xlinux ; then
+		case "$pic_mode-$enable_static" in
+			default-*)
+				# Use symvers if PIC is defined.
+				have_symbol_versions_linux=2
+				;;
+			*-no)
+				# Not building static library.
+				# Use symvers unconditionally.
+				have_symbol_versions_linux=1
+				;;
+			*)
+				AC_MSG_RESULT([])
+				AC_MSG_ERROR([
+    On GNU/Linux, building both shared and static library at the same time
+    is not supported if --with-pic or --without-pic is used.
+    Use either --disable-shared or --disable-static to build one type
+    of library at a time. If both types are needed, build one at a time,
+    possibly picking only src/liblzma/.libs/liblzma.a from the static build.])
+				;;
+		esac
+		AC_DEFINE_UNQUOTED([HAVE_SYMBOL_VERSIONS_LINUX],
+			[$have_symbol_versions_linux],
+			[Define to 1 to if GNU/Linux-specific details
+			are unconditionally wanted for symbol
+			versioning. Define to 2 to if these are wanted
+			only if also PIC is defined (allows building
+			both shared and static liblzma at the same
+			time with Libtool if neither --with-pic nor
+			--without-pic is used). This define must be
+			used together with liblzma_linux.map.])
+	elif test "x$enable_symbol_versions" != xgeneric ; then
+		AC_MSG_RESULT([])
+		AC_MSG_ERROR([unknown symbol versioning variant '$enable_symbol_versions'])
+	fi
+	AC_MSG_RESULT([yes ($enable_symbol_versions)])
+])
+
+AM_CONDITIONAL([COND_SYMVERS_LINUX],
+	[test "x$enable_symbol_versions" = xlinux])
+AM_CONDITIONAL([COND_SYMVERS_GENERIC],
+	[test "x$enable_symbol_versions" = xgeneric])
 
 
 ###############################################################################
@@ -673,10 +775,6 @@ AC_CHECK_HEADERS([immintrin.h])
 ###############################################################################
 # Checks for typedefs, structures, and compiler characteristics.
 ###############################################################################
-
-dnl We don't need these as long as we need a C99 compiler anyway.
-dnl AC_C_INLINE
-dnl AC_C_RESTRICT
 
 AC_HEADER_STDBOOL
 
@@ -740,7 +838,7 @@ TUKLIB_MBSTR
 sha256_header_found=no
 sha256_type_found=no
 sha256_func_found=no
-if test "x$enable_external_sha256" = "xyes"; then
+AS_IF([test "x$enable_external_sha256" = "xyes"], [
 	# Test for Common Crypto before others, because Darwin has sha256.h
 	# too and we don't want to use that, because on older versions it
 	# uses OpenSSL functions, whose SHA256_Init is not guaranteed to
@@ -770,13 +868,16 @@ if test "x$enable_external_sha256" = "xyes"; then
 				[sha256_func_found=yes ; break])
 		fi
 	fi
-fi
+])
 AM_CONDITIONAL([COND_INTERNAL_SHA256], [test "x$sha256_func_found" = xno])
 if test "x$enable_external_sha256$sha256_func_found" = xyesno; then
 	AC_MSG_ERROR([--enable-external-sha256 was specified but no supported external SHA-256 implementation was found])
 fi
 
-# Check for SSE2 intrinsics.
+# Check for SSE2 intrinsics. There is no run-time detection for SSE2 so if
+# compiler options enable SSE2 then SSE2 support is required by the binaries.
+# The compile-time check for SSE2 is done with #ifdefs because some compilers
+# (ICC, MSVC) allow SSE2 intrinsics even when SSE2 isn't enabled.
 AC_CHECK_DECL([_mm_movemask_epi8],
 	[AC_DEFINE([HAVE__MM_MOVEMASK_EPI8], [1],
 		[Define to 1 if _mm_movemask_epi8 is available.])],
@@ -786,11 +887,11 @@ AC_CHECK_DECL([_mm_movemask_epi8],
 #endif])
 
 # Check for sandbox support. If one is found, set enable_sandbox=found.
-case $enable_sandbox in
-	auto | capsicum)
+AS_CASE([$enable_sandbox],
+	[auto | capsicum], [
 		AX_CHECK_CAPSICUM([enable_sandbox=found], [:])
-		;;
-esac
+	]
+)
 
 # If a specific sandboxing method was explicitly requested and it wasn't
 # found, give an error.
@@ -819,7 +920,7 @@ if test -n "$CFLAG_VISIBILITY" && test "$is_w32" = no; then
 	AM_CFLAGS="$AM_CFLAGS $CFLAG_VISIBILITY"
 fi
 
-if test "$GCC" = yes ; then
+AS_IF([test "$GCC" = yes], [
 	# Enable as much warnings as possible. These commented warnings won't
 	# work for this package though:
 	#   * -Wunreachable-code breaks several assert(0) cases, which are
@@ -859,7 +960,7 @@ if test "$GCC" = yes ; then
 		OLD_CFLAGS="$CFLAGS"
 		CFLAGS="$CFLAGS $NEW_FLAG -Werror"
 		AC_COMPILE_IFELSE([AC_LANG_SOURCE(
-				[void foo(void); void foo(void) { }])], [
+				[[void foo(void); void foo(void) { }]])], [
 			AM_CFLAGS="$AM_CFLAGS $NEW_FLAG"
 			AC_MSG_RESULT([yes])
 		], [
@@ -875,7 +976,7 @@ if test "$GCC" = yes ; then
 	if test "x$enable_werror" = "xyes"; then
 		AM_CFLAGS="$AM_CFLAGS -Werror"
 	fi
-fi
+])
 
 
 ###############################################################################
